@@ -1,0 +1,913 @@
+---
+title: "P437: Investigating the role of IL-2 in regulatory T cell control of DC function"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2); theme_set(
+  theme_bw(20) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(colour="black", fill=NA, size=1),
+          axis.text=element_text(colour="black"),
+          axis.ticks=element_line(colour="black"),
+          legend.key = element_blank(),
+          text = element_text(size=20),
+          strip.text.x = element_text(size = 10,margin = margin( b = 2, t = 2) ),
+            strip.background = element_rect(fill="white", colour="black")))
+
+library(ggthemes)
+library(ggbeeswarm)
+library(viridis)
+library(stringr)
+library(readxl)
+library(kableExtra)
+library(RColorBrewer)
+library(tidyr)
+library(gtools)
+library(data.table)
+library(edgeR)
+library(ggrepel)
+library(ComplexHeatmap)
+library(umap)
+library(forcats)
+#set a random seed for reproducibility
+set.seed(42)
+
+opts_chunk$set(fig.width=6, fig.height=4.0, cache = TRUE, echo=FALSE, warning=FALSE, message=FALSE, results='hide')
+opts_knit$set(root.dir = "/Users/hdeberg/Box/P437_IL2InTregDCControl_Campbell/P437manuscript")
+
+options(stringsAsFactors = FALSE)
+```
+
+```{r set_up_directories}
+
+baseDir <- "/Users/hdeberg/Box/P437_IL2InTregDCControl_Campbell/P437manuscript"
+dataDir <- file.path(baseDir, "data")
+plotsDir <- file.path(baseDir, "plots")
+tablesDir <- file.path(baseDir, "tables")
+
+```
+
+```{r get_data}
+
+load(file.path(dataDir,
+               "SuppFig3B_D_E.RData"))
+
+
+```
+
+```{r save_for_geo}
+
+geoMetadata <- designQC %>%
+  dplyr::mutate(species = "Mus musculus") %>%
+  dplyr::select(libid, 
+                sample_name,
+                species,
+                sort,
+                donorId,
+                treatment,
+                sex) %>%
+  dplyr::arrange(libid)
+
+write.csv(geoMetadata,
+          file = file.path(dataDir,
+                           "GeoMetadata.csv"),
+          row.names = F,
+          quote = F)
+
+countsGEO <- counts[,geoMetadata$libid]
+
+write.csv(countsGEO,
+          file = file.path(dataDir,
+                           "GeoRawCounts.csv"),
+          row.names = F,
+          quote = F)
+
+```
+
+# PCA 
+
+
+## cDC1s and cDC2s combined
+
+```{r pca, fig.width=9, fig.height=4}
+
+designNoAnti <- designQC %>%
+  dplyr::filter(il2Injection != "anti-IL-2") %>%
+  droplevels()
+
+treatmentColors <- treatmentColors[!(names(treatmentColors) %in% 
+                                       c("anti-IL-2/PBS", "anti-IL-2/LPS"))]
+
+countsNoAnti <- countsPCNorm[ , designNoAnti$libid]
+
+#Run PCA on the normalized log2 transformed counts data
+pca = prcomp(log2(as.data.frame(t(countsNoAnti))+1), center=TRUE, scale=FALSE)
+
+#Make PCA plot
+sumPCA = summary(pca)
+pcaScores= as.data.frame(pca$x)
+
+pdatscores <- merge(designQC, pcaScores, by.x = "libid", by.y="row.names")
+
+pc1Lab <- paste("PC1 (", round(100*sumPCA$importance[2, 1], 1),  "%)", sep="")
+pc2Lab <- paste("PC2 (", round(100*sumPCA$importance[2, 2], 1),  "%)", sep="")
+
+pc3Lab <- paste("PC3 (", round(100*sumPCA$importance[2, 3], 1),  "%)", sep="")
+pc4Lab <- paste("PC4 (", round(100*sumPCA$importance[2, 4], 1),  "%)", sep="")
+
+sortShapes <- c("cDC1" = 1,
+                "cDC2" = 19)
+
+#Edit size parameter to make bigger or smaller
+gPCA <- ggplot() + 
+  geom_point(data = pdatscores, 
+             aes(x=PC1, 
+                 y=PC2, 
+                 color = treatment,
+                 shape = sortShort),
+             size = 3) +
+  scale_color_manual(values = treatmentColors,
+                     name = "Treatment") +
+  scale_shape_manual(values = sortShapes,
+                     name = "Cell type") +
+  labs(x = pc1Lab, 
+       y = pc2Lab) +
+theme(aspect.ratio = 1)
+
+print(gPCA)
+
+pdf(file.path(plotsDir, "SuppFigure3B_PCA.pdf"),
+    height = 4,
+    width = 6)
+
+print(gPCA)
+
+invisible(dev.off())
+
+
+```
+
+```{r cdc_subsets, fig.width=9, fig.height=4}
+
+designNoAntiCDC1 <- designCDC1 %>%
+  dplyr::filter(il2Injection != "anti-IL-2")
+
+countsNoAntiCDC1 <- countsCDC1[ , designNoAntiCDC1$libid]
+
+designNoAntiCDC2 <- designCDC2 %>%
+  dplyr::filter(il2Injection != "anti-IL-2")
+
+countsNoAntiCDC2 <- countsCDC2[ , designNoAntiCDC2$libid]
+
+```
+
+## cDC1s only
+
+```{r pca_cdc1, fig.width=9, fig.height=4}
+
+#Run PCA on the normalized log2 transformed counts data
+pca = prcomp(log2(as.data.frame(t(countsNoAntiCDC1))+1), center=TRUE, scale=FALSE)
+
+#Make PCA plot
+sumPCA = summary(pca)
+pcaScores= as.data.frame(pca$x)
+
+pdatscores <- merge(designNoAntiCDC1, pcaScores, by.x = "libid", by.y="row.names")
+
+pc1Lab <- paste("PC1 (", round(100*sumPCA$importance[2, 1], 1),  "%)", sep="")
+pc2Lab <- paste("PC2 (", round(100*sumPCA$importance[2, 2], 1),  "%)", sep="")
+
+pc3Lab <- paste("PC3 (", round(100*sumPCA$importance[2, 3], 1),  "%)", sep="")
+pc4Lab <- paste("PC4 (", round(100*sumPCA$importance[2, 4], 1),  "%)", sep="")
+
+sortShapes <- c("cDC1" = 1,
+                "cDC2" = 19)
+
+#Edit size parameter to make bigger or smaller
+gPCAcDC1 <- ggplot() + 
+  geom_point(data = pdatscores, 
+             aes(x=PC1, 
+                 y=PC2, 
+                 color = treatment),
+             size = 3) +
+  scale_color_manual(values = treatmentColors,
+                     name = "Treatment") +
+  labs(x = pc1Lab, 
+       y = pc2Lab,
+       title = "cDC1") +
+theme(aspect.ratio = 1)
+
+print(gPCAcDC1)
+
+pdf(file.path(plotsDir, "SuppFigure3_PCA_cDC1Only.pdf"),
+    height = 4,
+    width = 6)
+
+print(gPCAcDC1)
+
+invisible(dev.off())
+
+
+```
+
+## cDC2s only
+
+```{r pca_cdc2, fig.width=9, fig.height=4}
+
+#Run PCA on the normalized log2 transformed counts data
+pca = prcomp(log2(as.data.frame(t(countsNoAntiCDC2))+1), center=TRUE, scale=FALSE)
+
+#Make PCA plot
+sumPCA = summary(pca)
+pcaScores= as.data.frame(pca$x)
+
+pdatscores <- merge(designNoAntiCDC2, pcaScores, by.x = "libid", by.y="row.names")
+
+pc1Lab <- paste("PC1 (", round(100*sumPCA$importance[2, 1], 1),  "%)", sep="")
+pc2Lab <- paste("PC2 (", round(100*sumPCA$importance[2, 2], 1),  "%)", sep="")
+
+pc3Lab <- paste("PC3 (", round(100*sumPCA$importance[2, 3], 1),  "%)", sep="")
+pc4Lab <- paste("PC4 (", round(100*sumPCA$importance[2, 4], 1),  "%)", sep="")
+
+sortShapes <- c("cDC1" = 1,
+                "cDC2" = 19)
+
+#Edit size parameter to make bigger or smaller
+gPCAcDC2 <- ggplot() + 
+  geom_point(data = pdatscores, 
+             aes(x=PC1, 
+                 y=PC2, 
+                 color = treatment),
+             size = 3) +
+  scale_color_manual(values = treatmentColors,
+                     name = "Treatment") +
+  labs(x = pc1Lab, 
+       y = pc2Lab,
+       title = "cDC2") +
+theme(aspect.ratio = 1)
+
+print(gPCAcDC2)
+
+pdf(file.path(plotsDir, "SuppFigure3_PCA_cDC2Only.pdf"),
+    height = 4,
+    width = 6)
+
+print(gPCAcDC2)
+
+invisible(dev.off())
+
+
+```
+
+
+```{r make_volcano_plots}
+
+plot_volcano <- function(top_table_in,
+                         fc_cutoff = 1,
+                         p_cutoff = 0.05,
+                         fc_for_anno = 2.5,
+                         p_for_anno = 0.1,
+                         y_max = 2.5,
+                         title = "",
+                         color_values = c("darkcyan", "red"),
+                         color_labels = NULL,
+                         anno_type = "or",
+                         gene_text_size = 2.5){
+  
+  top_table_in$gene_name <- rownames(top_table_in)
+
+  if(anno_type == "or"){
+    selected_genes <- top_table_in %>%
+  dplyr::filter(abs(logFC) > fc_for_anno | adj.P.Val < p_for_anno)
+  }
+  
+  if(anno_type == "and"){
+    selected_genes <- top_table_in %>%
+  dplyr::filter(abs(logFC) > fc_for_anno & adj.P.Val < p_for_anno)
+  }
+  
+  if(anno_type == "top20"){
+    selected_genes <- top_table_in[1:20,]
+  }
+  
+  if(anno_type == "nfk"){
+    nfk_genes <- c("Relb",
+                        "Ikbkb",
+                        "Irf1",
+                        "Cd80",
+                        "Cd274",
+                        "Ccr7",
+                        "Ccl5",
+                        "Cxcl10",
+                        "Il15ra",
+                        "Il15",
+                        "Socs2",
+                        "Traf1",
+                        "Traf2",
+                        "Traf3")
+    
+    selected_genes <- top_table_in[top_table_in$gene_name %in% nfk_genes,]
+  }
+  
+  if(anno_type == "nfk_top10"){
+    nfk_genes <- c("Relb",
+                        "Ikbkb",
+                        "Irf1",
+                        "Cd80",
+                        "Cd274",
+                        "Ccr7",
+                        "Ccl5",
+                        "Cxcl10",
+                        "Il15ra",
+                        "Il15",
+                        "Socs2",
+                        "Traf1",
+                        "Traf2",
+                        "Traf3")
+    
+    selected_genes <- top_table_in[top_table_in$gene_name %in% nfk_genes,]
+    top10Genes <- top_table_in[1:10,]
+  }
+
+g_volcano <- ggplot(data = top_table_in, aes(x=logFC, y=-log10(adj.P.Val), color = logFC>0)) +
+  geom_point(alpha=0.7, size=2.5, shape = 19) +
+  #theme(legend.position = "none") +
+  scale_color_manual(values = color_values, name = "", labels = color_labels)+
+  xlab("log2 fold change") + ylab("-log10 FDR")+ ggtitle(title) +
+  geom_vline(xintercept=fc_cutoff, color="black", linetype="dotted",size=1.0) +
+  geom_vline(xintercept=-1*fc_cutoff, color="black", linetype="dotted",size=1.0)+
+  geom_hline(yintercept=-log10(p_cutoff), color="black",linetype="dotted",size=1.0)+
+  geom_point(data = selected_genes,
+             aes(x=logFC, y=-log10(adj.P.Val)),
+             color = "black",
+             size=2.5, 
+             shape = 19) +
+   geom_text_repel(data = selected_genes,
+             aes(x=logFC, y=-log10(adj.P.Val),label=gene_name), 
+             size=gene_text_size, 
+             #vjust=1,
+             #hjust=0.5,
+             force = 50,
+             max.overlaps = Inf,
+             color="black")+
+  ylim(c(0,y_max))+
+  theme(text = element_text(size=12),
+        aspect.ratio = 1)
+
+if(anno_type == "nfk_top10"){
+  
+  g_volcano <- g_volcano +
+    geom_point(data = top10Genes,
+             aes(x=logFC, y=-log10(adj.P.Val)),
+             color = "gray",
+             size=2.5, 
+             shape = 19) +
+    geom_text_repel(data = top10Genes,
+             aes(x=logFC, y=-log10(adj.P.Val),label=gene_name), 
+             size=gene_text_size, 
+             #vjust=1,
+             #hjust=0.5,
+             force = 50,
+             max.overlaps = Inf,
+             color="black")
+  
+}
+
+return(g_volcano)
+
+}
+```
+
+```{r de_functions}
+save_DE_table <- function(top_genes, out_file){
+  top_genes$Gene <- rownames(top_genes)
+  top_genes <- top_genes %>%
+    dplyr::rename(log2FoldChange = logFC,
+                  pValue = P.Value,
+                  MultipleTestingCorrectedFDR = adj.P.Val) %>%
+    dplyr::select(Gene, log2FoldChange, pValue, MultipleTestingCorrectedFDR)
+  
+  write.csv(top_genes,
+            file.path(tablesDir,
+                      out_file),
+            row.names = F,
+            quote=F)
+}
+
+save_sig_table <- function(top_genes, 
+                           out_file,
+                           fdr_cut = 0.05,
+                           lfc_cut = 1){
+  
+  top_genes$Gene <- rownames(top_genes)
+  sig_genes <- top_genes %>%
+    dplyr::rename(log2FoldChange = logFC,
+                  pValue = P.Value,
+                  MultipleTestingCorrectedFDR = adj.P.Val) %>%
+    dplyr::filter(MultipleTestingCorrectedFDR <= fdr_cut,
+                  abs(log2FoldChange) >= lfc_cut) %>%
+    dplyr::select(Gene, log2FoldChange, pValue, MultipleTestingCorrectedFDR)
+  
+  write.csv(sig_genes,
+            file.path(tablesDir,
+                      out_file),
+            row.names = F,
+            quote=F)
+}
+
+get_sig_genes <- function(top_genes,
+                           fdr_cut = 0.05,
+                           lfc_cut = 1){
+  
+  top_genes$gene <- rownames(top_genes)
+  
+  sig_table <- top_genes %>%
+    dplyr::filter(abs(logFC) > lfc_cut,
+                  adj.P.Val < fdr_cut)
+  
+  sig_genes <- sig_table$gene
+  return(sig_genes)
+
+}
+
+get_top_n_genes <- function(top_genes,
+                            n = 20){
+  
+  top_genes$gene <- rownames(top_genes)
+  
+  top_n_table <- top_genes %>%
+    dplyr::arrange(adj.P.Val)
+  
+  top_n_table <- top_n_table[1:n,]
+  
+  top_n_genes <- top_n_table$gene
+  
+  return(top_n_genes)
+
+}
+
+add_gene_names <- function(x){
+  x$gene <- rownames(x)
+  return(x)
+}
+
+combine_top_tables <- function(table_list, 
+                               first_table, 
+                               first_table_string){
+  
+  first_table <- add_gene_names(first_table)
+  table_list <- lapply(table_list, add_gene_names)
+  
+  de_table1 <- first_table %>%
+    rename_with(.fn = ~paste0(first_table_string, "_",.), .cols = c("logFC", "adj.P.Val") )
+  
+  de_table <- safejoin::eat(de_table1, table_list,
+    .by = c("gene"), .mode= "full",.check="") %>%
+  dplyr::select(gene,
+                ends_with("logFC"),
+                ends_with("adj.P.Val"))
+  
+  return(de_table)
+  
+}
+
+```
+
+# Differential expression within cDC1s
+
+```{r de_genes_cDC1s}
+
+designMatCDC1 <- model.matrix(~designCDC1$il2Injection* designCDC1$day0Injection)
+
+#simplify columns names so contrasts are easier to make later
+colnames(designMatCDC1) <- colnames(designMatCDC1) %>%
+  str_remove_all("designCDC1|il2Injection|day0Injection") %>%
+  str_replace_all("anti-IL-2", "antiIL2") %>%
+  str_replace_all("Fc.Mut24 IL-2", "IL2mutein") %>%
+  str_remove_all("\\$|\\(|\\)") %>%
+  str_replace_all("\\:", "_")
+
+vwtsCDC1 <- voomWithQualityWeights(countsCDC1, design= designMatCDC1, plot=F, span=0.1)
+
+#vwtsCDC1 <- voom(countsCDC1, design= designMatCDC1, plot=F, span=0.1)
+
+#PBS samples tend to be given slightly higher weights than LPS samples. But there aren't many extreme outliers.
+# designCDC1$vwtsWeights <- vwtsCDC1$targets$sample.weights[match(designCDC1$libid, rownames(vwtsCDC1$targets))]
+# 
+# ggplot(designCDC1,
+#        aes(x = sample_name,
+#            y = vwtsWeights,
+#            fill = treatment))+
+#   geom_col()+
+#   scale_fill_manual(values = treatmentColors)
+
+
+#fit model
+vfit <-
+  lmFit(vwtsCDC1)
+
+vfitEb <- eBayes(vfit)
+
+contrastsCDC1 <- makeContrasts(
+  "IL2mutein",
+  "LPS",
+  "IL2mutein+IL2mutein_LPS",
+  "IL2mutein_LPS",
+  "LPS+IL2mutein_LPS",
+  levels=designMatCDC1)
+
+contrastFitCDC1 <- contrasts.fit(vfitEb, contrastsCDC1)
+
+contrastFitCDC1 <- eBayes(contrastFitCDC1)
+
+```
+
+## Volcano plot
+
+```{r plot_ind_cdc1_volcanos}
+
+topIL2MuteinVsControlWithPBSIncDC1s <- topTable(contrastFitCDC1, coef = "IL2mutein", sort.by = "P", number = Inf)
+
+topIL2MuteinVsControlWithLPSIncDC1s <- topTable(contrastFitCDC1, coef = "IL2mutein+IL2mutein_LPS", sort.by = "P", number = Inf)
+
+topLPSvsPBSInControlsIncDC1s <- topTable(contrastFitCDC1, coef = "LPS", sort.by = "P", number = Inf)
+
+topLPSvsPBSInMuteinIncDC1s <- topTable(contrastFitCDC1, coef = "LPS+IL2mutein_LPS", sort.by = "P", number = Inf)
+
+#Make individual versions with larger text
+
+gIL2MuteinVsControlWithLPSIncDC1s <- plot_volcano(topIL2MuteinVsControlWithLPSIncDC1s,
+                              y_max = 9,
+                              color_labels = c("PBS/LPS", "Fc.Mut24/LPS"),
+                              color_values = as.vector(treatmentColors[c("PBS/LPS", "Fc.Mut24 IL-2/LPS")]),
+                          anno_type = "nfk",
+                          gene_text_size = 6) +
+   theme(text = element_text(size = 22))
+
+png(file.path(plotsDir, "SuppFigure3EVolcano_IL2MuteinVsControl_WithLPS_cDC1s.png"),
+    height = 600,
+    width = 700)
+
+print(gIL2MuteinVsControlWithLPSIncDC1s)
+
+invisible(dev.off())
+
+pdf(file.path(plotsDir, "SuppFigure3EVolcano_IL2MuteinVsControl_WithLPS_cDC1s.pdf"),
+    height = 7,
+    width = 9)
+
+print(gIL2MuteinVsControlWithLPSIncDC1s)
+
+invisible(dev.off())
+
+
+gIL2MuteinVsControlWithLPSIncDC1sTop10 <- plot_volcano(topIL2MuteinVsControlWithLPSIncDC1s,
+                              y_max = 9,
+                              color_labels = c("PBS/LPS", "Fc.Mut24/LPS"),
+                              color_values = as.vector(treatmentColors[c("PBS/LPS", "Fc.Mut24 IL-2/LPS")]),
+                          anno_type = "nfk_top10",
+                          gene_text_size = 6) +
+   theme(text = element_text(size = 22))
+
+pdf(file.path(plotsDir, "SuppFigure3EVolcano_Top10AndNFK_IL2MuteinVsControl_WithLPS_cDC1s.pdf"),
+    height = 7,
+    width = 9)
+
+print(gIL2MuteinVsControlWithLPSIncDC1sTop10)
+
+invisible(dev.off())
+
+```
+
+# Differential expression within cDC2s
+
+```{r de_genes_cDC2s}
+
+designMatCDC2 <- model.matrix(~designCDC2$il2Injection* designCDC2$day0Injection)
+
+#simplify columns names so contrasts are easier to make later
+colnames(designMatCDC2) <- colnames(designMatCDC2) %>%
+  str_remove_all("designCDC2|il2Injection|day0Injection") %>%
+  str_replace_all("anti-IL-2", "antiIL2") %>%
+  str_replace_all("Fc.Mut24 IL-2", "IL2mutein") %>%
+  str_remove_all("\\$|\\(|\\)") %>%
+  str_replace_all("\\:", "_")
+
+vwtsCDC2 <- voomWithQualityWeights(countsCDC2, design= designMatCDC2, plot=F, span=0.1)
+
+#vwtsCDC2 <- voom(countsCDC2, design= designMatCDC2, plot=F, span=0.1)
+
+#PBS samples tend to be given slightly higher weights than LPS samples. But there aren't many extreme outliers.
+# designCDC2$vwtsWeights <- vwtsCDC2$targets$sample.weights[match(designCDC2$libid, rownames(vwtsCDC2$targets))]
+# 
+# ggplot(designCDC2,
+#        aes(x = sample_name,
+#            y = vwtsWeights,
+#            fill = treatment))+
+#   geom_col()+
+#   scale_fill_manual(values = treatmentColors)
+
+
+#fit model
+vfit <-
+  lmFit(vwtsCDC2)
+
+vfitEb <- eBayes(vfit)
+
+contrastsCDC2 <- makeContrasts(
+  "IL2mutein",
+  "LPS",
+  "IL2mutein+IL2mutein_LPS",
+  "IL2mutein_LPS",
+  "LPS+IL2mutein_LPS",
+  levels=designMatCDC2)
+
+contrastFitCDC2 <- contrasts.fit(vfitEb, contrastsCDC2)
+
+contrastFitCDC2 <- eBayes(contrastFitCDC2)
+
+topIL2MuteinVsControlWithPBSIncDC2s <- topTable(contrastFitCDC2, coef = "IL2mutein", sort.by = "P", number = Inf)
+
+topIL2MuteinVsControlWithLPSIncDC2s <- topTable(contrastFitCDC2, coef = "IL2mutein+IL2mutein_LPS", sort.by = "P", number = Inf)
+
+topLPSvsPBSInControlsIncDC2s <- topTable(contrastFitCDC2, coef = "LPS", sort.by = "P", number = Inf)
+
+topLPSvsPBSInMuteinIncDC2s <- topTable(contrastFitCDC2, coef = "LPS+IL2mutein_LPS", sort.by = "P", number = Inf)
+
+```
+
+```{r venn_diagrams}
+
+library(ggvenn)
+#cDC1s
+
+listMutVsPBS <- list("Fc.Mut24 vs PBS in Ctrl" = get_sig_genes(topIL2MuteinVsControlWithPBSIncDC1s),
+                          "Fc.Mut24 vs PBS in LPS" = get_sig_genes(topIL2MuteinVsControlWithLPSIncDC1s))
+
+listLPSVsCtrl <- list("LPS vs Ctrl in PBS" = get_sig_genes(topLPSvsPBSInControlsIncDC1s),
+                     "LPS vs Ctrl in Fc.Mut24" = get_sig_genes(topLPSvsPBSInMuteinIncDC1s))
+
+
+pdf(file.path(plotsDir, "VennPlotLPSvsCtrlDEGenes.pdf"),
+    height = 4,
+    width = 4)
+ggvenn(listLPSVsCtrl,
+       fill_color = c("#1F78B4", "#E31A1C")) 
+invisible(dev.off())
+
+pdf(file.path(plotsDir, "VennPlotMuteinVsPBSDEGenes.pdf"),
+    height = 4,
+    width = 4)
+ggvenn(listMutVsPBS,
+       fill_color = c("#1F78B4", "#E31A1C"))
+invisible(dev.off())
+
+
+listMutVsPBScDC2s <- list("Fc.Mut24 vs PBS in Ctrl" = get_sig_genes(topIL2MuteinVsControlWithPBSIncDC2s),
+                          "Fc.Mut24 vs PBS in LPS" = get_sig_genes(topIL2MuteinVsControlWithLPSIncDC2s))
+
+listLPSVsCtrlcDC2s <- list("LPS vs Ctrl in PBS" = get_sig_genes(topLPSvsPBSInControlsIncDC2s),
+                     "LPS vs Ctrl in Fc.Mut24" = get_sig_genes(topLPSvsPBSInMuteinIncDC2s))
+
+
+pdf(file.path(plotsDir, "VennPlotLPSvsCtrlDEGenescDC2s.pdf"),
+    height = 4,
+    width = 4)
+ggvenn(listLPSVsCtrlcDC2s,
+       fill_color = c("#1F78B4", "#E31A1C")) 
+invisible(dev.off())
+
+pdf(file.path(plotsDir, "VennPlotMuteinVsPBSDEGenescDC2s.pdf"),
+    height = 4,
+    width = 4)
+ggvenn(listMutVsPBScDC2s,
+       fill_color = c("#1F78B4", "#E31A1C"))
+invisible(dev.off())
+
+
+library(VennDiagram)
+listMutVsPBS <- list("Ctrl" = get_sig_genes(topIL2MuteinVsControlWithPBSIncDC1s),
+                          "LPS" = get_sig_genes(topIL2MuteinVsControlWithLPSIncDC1s))
+
+listLPSVsCtrl <- list("PBS" = get_sig_genes(topLPSvsPBSInControlsIncDC1s),
+                     "Fc.Mut24" = get_sig_genes(topLPSvsPBSInMuteinIncDC1s))
+
+
+venn.diagram(listMutVsPBS, fill = c("#1F78B4", "#E31A1C"), 
+             alpha = c(0.5, 0.5), lwd =0, filename = file.path(plotsDir, "ProportionalVennPlotMutVsPBSDEGenescDC1s.png"), imagetype = "png")
+
+venn.diagram(listLPSVsCtrl, fill = c("#1F78B4", "#E31A1C"), 
+             alpha = c(0.5, 0.5), lwd =0, filename = file.path(plotsDir, "ProportionalVennPlotLPSvsCtrlDEGenescDC1s.png"), imagetype = "png")
+
+library(venneuler)
+
+int <- intersect(get_sig_genes(topIL2MuteinVsControlWithPBSIncDC1s),
+                        get_sig_genes(topIL2MuteinVsControlWithLPSIncDC1s))
+nCtrl <- length(setdiff(get_sig_genes(topIL2MuteinVsControlWithPBSIncDC1s), int))
+nLPS <- length(setdiff(get_sig_genes(topIL2MuteinVsControlWithLPSIncDC1s),int))
+nCtrlAndLPS <- length(int)
+
+int <- intersect(get_sig_genes(topIL2MuteinVsControlWithPBSIncDC1s),
+                        get_sig_genes(topIL2MuteinVsControlWithLPSIncDC1s))
+nPBS <- length(setdiff(get_sig_genes(topLPSvsPBSInControlsIncDC1s),int))
+nMutein <- length(setdiff(get_sig_genes(topLPSvsPBSInMuteinIncDC1s),int))
+nPBSAndMutein <- length(intersect(get_sig_genes(topLPSvsPBSInControlsIncDC1s),
+                           get_sig_genes(topLPSvsPBSInMuteinIncDC1s)))
+
+vMutVsPBScDC1s <- venneuler(c("Ctrl"=nCtrl, "LPS"=nLPS, "Ctrl&LPS"=nCtrlAndLPS))
+vLPSvsCtrlcDC1s <- venneuler(c("Mut"=nMutein, "PBS"=nPBS, "Mut&PBS"=nPBSAndMutein))
+
+pdf(file.path(plotsDir, "EulerMutVsPBSDEGenescDC1s.pdf"),
+    width = 4,
+    height = 4)
+plot(vMutVsPBScDC1s)
+dev.off()
+
+pdf(file.path(plotsDir, "EulerLPSvsCtrlDEGenescDC1s.pdf"),
+    width = 4,
+    height = 4)
+plot(vLPSvsCtrlcDC1s)
+dev.off()
+
+
+int <- intersect(get_sig_genes(topIL2MuteinVsControlWithPBSIncDC2s),
+                        get_sig_genes(topIL2MuteinVsControlWithLPSIncDC2s))
+nCtrl <- length(setdiff(get_sig_genes(topIL2MuteinVsControlWithPBSIncDC2s), int))
+nLPS <- length(setdiff(get_sig_genes(topIL2MuteinVsControlWithLPSIncDC2s),int))
+nCtrlAndLPS <- length(int)
+
+int <- intersect(get_sig_genes(topIL2MuteinVsControlWithPBSIncDC2s),
+                        get_sig_genes(topIL2MuteinVsControlWithLPSIncDC2s))
+nPBS <- length(setdiff(get_sig_genes(topLPSvsPBSInControlsIncDC2s),int))
+nMutein <- length(setdiff(get_sig_genes(topLPSvsPBSInMuteinIncDC2s),int))
+nPBSAndMutein <- length(intersect(get_sig_genes(topLPSvsPBSInControlsIncDC2s),
+                           get_sig_genes(topLPSvsPBSInMuteinIncDC2s)))
+
+vMutVsPBScDC2s <- venneuler(c("Ctrl"=nCtrl, "LPS"=nLPS, "Ctrl&LPS"=nCtrlAndLPS))
+vLPSvsCtrlcDC2s <- venneuler(c("Mut"=nMutein, "PBS"=nPBS, "Mut&PBS"=nPBSAndMutein))
+
+pdf(file.path(plotsDir, "EulerMutVsPBSDEGenescDC2s.pdf"),
+    width = 4,
+    height = 4)
+plot(vMutVsPBScDC2s)
+dev.off()
+
+pdf(file.path(plotsDir, "EulerLPSvsCtrlDEGenescDC2s.pdf"),
+    width = 4,
+    height = 4)
+plot(vLPSvsCtrlcDC2s)
+dev.off()
+
+```
+
+
+```{r fc_scatterplots}
+
+idxMatch <- match(rownames(topLPSvsPBSInControlsIncDC1s),
+                  rownames(topLPSvsPBSInMuteinIncDC1s))
+
+combinedTop <- data.frame(gene = rownames(topLPSvsPBSInControlsIncDC1s),
+                          lfcPBS = topLPSvsPBSInControlsIncDC1s$logFC,
+                          adjPPBS = topLPSvsPBSInControlsIncDC1s$adj.P.Val,
+                          lfcMutein = topLPSvsPBSInMuteinIncDC1s$logFC[idxMatch],
+                          adjPMutein = topLPSvsPBSInMuteinIncDC1s$adj.P.Val[idxMatch])
+
+limit <- 8.05
+
+gLFCComparison <- combinedTop %>%
+  ggplot(aes(x = lfcPBS,
+             y = lfcMutein))+
+  geom_point() +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "gray") +
+  geom_vline(xintercept = 0,
+             color = "black",
+             linetype = "dashed") +
+  geom_hline(yintercept = 0,
+             color = "black",
+             linetype = "dashed") +
+  xlim(c(-1*limit, limit)) +
+  ylim(c(-1*limit, limit)) +
+  labs(x = "LPS:Ctrl log2 fold-change\nwith PBS",
+       y = "LPS:Ctrl log2 fold-change\nwith Fc.Mut24") +
+  theme(aspect.ratio = 1)
+  
+pdf(file = file.path(plotsDir, 
+                     "ExpressionFoldChangeWithLPSincDC1s.pdf"),
+    height = 5,
+    width = 6)
+
+print(gLFCComparison)
+
+invisible(dev.off())
+
+idxMatch <- match(rownames(topLPSvsPBSInControlsIncDC2s),
+                  rownames(topLPSvsPBSInMuteinIncDC2s))
+
+combinedTopcDC2s <- data.frame(gene = rownames(topLPSvsPBSInControlsIncDC2s),
+                          lfcPBS = topLPSvsPBSInControlsIncDC2s$logFC,
+                          adjPPBS = topLPSvsPBSInControlsIncDC2s$adj.P.Val,
+                          lfcMutein = topLPSvsPBSInMuteinIncDC2s$logFC[idxMatch],
+                          adjPMutein = topLPSvsPBSInMuteinIncDC2s$adj.P.Val[idxMatch])
+
+limit <- 8.05
+
+gLFCComparisoncDC2s <- combinedTopcDC2s %>%
+  ggplot(aes(x = lfcPBS,
+             y = lfcMutein))+
+  geom_point() +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "gray") +
+  geom_vline(xintercept = 0,
+             color = "black",
+             linetype = "dashed") +
+  geom_hline(yintercept = 0,
+             color = "black",
+             linetype = "dashed") +
+  xlim(c(-1*limit, limit)) +
+  ylim(c(-1*limit, limit)) +
+  labs(x = "LPS:Ctrl log2 fold-change\nwith PBS",
+       y = "LPS:Ctrl log2 fold-change\nwith Fc.Mut24") +
+  theme(aspect.ratio = 1)
+  
+pdf(file = file.path(plotsDir, 
+                     "ExpressionFoldChangeWithLPSincDC2s.pdf"),
+    height = 5,
+    width = 6)
+
+print(gLFCComparisoncDC2s)
+
+invisible(dev.off())
+
+```
+
+
+```{r gene_set_enrichment_cdc1}
+
+#Run GSEA 
+
+humanVwtsCDC1 <- vwtsCDC1
+rownames(humanVwtsCDC1) <- str_to_upper(rownames(humanVwtsCDC1))
+
+hallmark <- read.csv(file.path(baseDir,
+                               "gene_sets/hallmark.csv"))
+
+hallmark <- hallmark[2:nrow(hallmark),]
+
+
+gseaHallmarkIL2MuteinLPSInteractionIncDC1s <- roast(
+    y=humanVwtsCDC1,
+    index=ids2indices(hallmark,
+                      identifiers=rownames(humanVwtsCDC1)),
+    design=designMatCDC1,
+    contrast=contrastsCDC1[, "IL2mutein_LPS"]) %>%
+  dplyr::arrange(FDR)
+
+gseaHallmarkMuteinVsControlsWithinPBSIncDC1s <- roast(
+    y=humanVwtsCDC1,
+    index=ids2indices(hallmark,
+                      identifiers=rownames(humanVwtsCDC1)),
+    design=designMatCDC1,
+    contrast=contrastsCDC1[, "IL2mutein"]) %>%
+  dplyr::arrange(FDR)
+
+gseaHallmarkMuteinVsControlsWithinLPSIncDC1s <- roast(
+    y=humanVwtsCDC1,
+    index=ids2indices(hallmark,
+                      identifiers=rownames(humanVwtsCDC1)),
+    design=designMatCDC1,
+    contrast=contrastsCDC1[, "IL2mutein+IL2mutein_LPS"]) %>%
+  dplyr::arrange(FDR)
+
+```
+
+```{r mutVscontrols_lps_cdc1s_gsea_barcode}
+
+pdf(file.path(plotsDir,
+          "SuppFigure3D_GSEABarcode_HALLMARK_TNFA_SIGNALING_VIA_NFKB_MuteinVsControls_InLPS_cDC1s.pdf"),
+    height = 4,
+    width = 7)
+
+barcodeplot(
+  statistics=topIL2MuteinVsControlWithLPSIncDC1s$logFC,
+   index=ids2indices(str_to_sentence(hallmark$HALLMARK_TNFA_SIGNALING_VIA_NFKB), identifiers=rownames(topIL2MuteinVsControlWithLPSIncDC1s))[[1]])
+
+invisible(dev.off())
+
+```
+
+
+
